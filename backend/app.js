@@ -104,13 +104,10 @@ const allowedOrigins = new Set([
   "http://127.0.0.1:4173",
 ]);
 
-```js
 const allowedOrigins = new Set([
   frontendUrl,
   "https://upto-skills-project.vercel.app",
   "http://localhost:5173",
-```
-
 
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
