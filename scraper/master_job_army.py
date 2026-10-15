@@ -7,7 +7,6 @@ import json
 import argparse
 import urllib.parse
 from datetime import datetime
-import pandas as pd
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
@@ -559,12 +558,12 @@ def run_master_job_army(search_query: str, headful: bool = False, limit: int = N
             browser = p.chromium.launch(
                 channel="chrome",
                 headless=not headful,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
             )
         except Exception:
             browser = p.chromium.launch(
                 headless=not headful,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
             )
 
         context = browser.new_context(

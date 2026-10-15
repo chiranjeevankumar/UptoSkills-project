@@ -1,6 +1,7 @@
 const { Queue, Worker } = require("bullmq");
 const { bullmqConnection, redisClient } = require("../config/redis");
 const axios = require("axios");
+const SCRAPER_URL = process.env.SCRAPER_URL || "http://localhost:8000";
 
 const queueName = "find-leads-queue";
 
@@ -14,7 +15,7 @@ const worker = new Worker(
     // Polling interval logic
     while (true) {
       try {
-        const response = await axios.get(`http://localhost:8000/scrape/${fastapiJobId}`);
+        const response = await axios.get(`${SCRAPER_URL}/scrape/${fastapiJobId}`);
         const data = response.data;
 
         if (data.status === "done") {
