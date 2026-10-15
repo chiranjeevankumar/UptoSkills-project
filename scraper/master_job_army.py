@@ -6,6 +6,9 @@ import random
 import json
 import argparse
 import urllib.parse
+import urllib.request
+import urllib.error
+from itertools import zip_longest
 from datetime import datetime
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
@@ -20,17 +23,13 @@ if sys.platform == "win32":
 
 
 TARGET_PLATFORMS = [
-    {"name": "Naukri", "search_keyword": "naukri", "domains": ["naukri.com"]},
-    {"name": "Indeed", "search_keyword": "indeed", "domains": ["indeed.com", "in.indeed.com"]},
-    {"name": "JoinHandshake", "search_keyword": "joinhandshake", "domains": ["joinhandshake.com", "handshake.com"]},
-    {"name": "SimplyHired", "search_keyword": "simplyhired", "domains": ["simplyhired.com", "simplyhired.co.in"]},
-    {"name": "GitHub Careers", "search_keyword": "github careers", "domains": ["github.com"]},
-    {"name": "Google Jobs", "search_keyword": "google jobs", "domains": ["google.com"]},
-    {"name": "Instahyre", "search_keyword": "instahyre", "domains": ["instahyre.com"]},
-    {"name": "Wellfound", "search_keyword": "wellfound", "domains": ["wellfound.com", "angel.co"]},
-    {"name": "Foundit", "search_keyword": "foundit", "domains": ["foundit.in", "monsterindia.com"]},
-    {"name": "Hired", "search_keyword": "hired", "domains": ["hired.com"]},
-    {"name": "Fiverr", "search_keyword": "fiverr", "domains": ["fiverr.com"]}
+    {"name": "Naukri", "query_suffix": "site:naukri.com", "domains": ["naukri.com"]},
+    {"name": "Indeed", "query_suffix": "site:indeed.com", "domains": ["indeed.com"]},
+    {"name": "Instahyre", "query_suffix": "site:instahyre.com", "domains": ["instahyre.com"]},
+    {"name": "Foundit", "query_suffix": "site:foundit.in", "domains": ["foundit.in", "monsterindia.com"]},
+    {"name": "Wellfound", "query_suffix": "site:wellfound.com", "domains": ["wellfound.com"]},
+    {"name": "GitHub Careers", "query_suffix": "careers site:github.com", "domains": ["github.com"]},
+    {"name": "Google Jobs", "query_suffix": "jobs apply", "domains": []},
 ]
 
 
@@ -133,69 +132,50 @@ def calculate_lead_score(lead: dict) -> int:
 
     return min(100, score)
 
+SERPER_URL = "https://google.serper.dev/search"
 
-def harvest_google_links_for_platform(page, base_query: str, platform: dict) -> list:
-    search_term = f"{base_query} {platform['search_keyword']}"
-    search_url = f"https://www.google.com/search?q={urllib.parse.quote(search_term)}&num=15"
-    
-    print(f"[*] Searching Google for: '{search_term}'...")
+
+def harvest_links_for_platform(base_query: str, platform: dict) -> list:
+    api_key = os.environ.get("SERPER_API_KEY")
+    if not api_key:
+        raise RuntimeError("SERPER_API_KEY is not set on the scraper service")
+
+    q = f"{base_query} {platform['query_suffix']}".strip()
+    print(f"[*] Searching for: '{q}'...")
+
+    body = json.dumps({"q": q, "num": 10, "gl": "in"}).encode("utf-8")
+    req = urllib.request.Request(
+        SERPER_URL,
+        data=body,
+        headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+        method="POST",
+    )
     try:
-        page.goto(search_url, wait_until="domcontentloaded", timeout=25000)
-        page.wait_for_timeout(2000)
-    except Exception as e:
-        print(f"    [-] Google search timeout for {platform['name']}: {e}")
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 401, 402, 403, 429):
+            raise RuntimeError(f"Search API error {e.code}: API key invalid or credits exhausted")
+        print(f"    [-] Search failed for {platform['name']}: HTTP {e.code}")
         return []
-
-    try:
-        for btn in page.query_selector_all('button, [role="button"]'):
-            t = (btn.inner_text() or "").lower()
-            if any(w in t for w in ["accept all", "i agree", "reject all"]):
-                btn.click()
-                page.wait_for_timeout(1000)
-                break
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"    [-] Search failed for {platform['name']}: {e}")
+        return []
 
     found_links = []
     seen_urls = set()
-
-    for h in page.query_selector_all('h3'):
-        title = h.inner_text().strip()
-        if not title or any(noise in title.lower() for noise in ["ai mode reply", "people also ask", "related searches"]):
+    for item in data.get("organic", []):
+        url = item.get("link") or ""
+        title = (item.get("title") or "").strip()
+        lower_u = url.lower()
+        if not url or url in seen_urls:
             continue
-
-        parent_a = h.query_selector('xpath=ancestor::a')
-        if parent_a:
-            href = parent_a.get_attribute('href') or ""
-            full_url = None
-
-            if href.startswith('/goto?') or href.startswith('/url?'):
-                full_url = f"https://www.google.com{href}"
-            elif href.startswith('http') and 'google.' not in href:
-                full_url = href
-
-            if full_url and full_url not in seen_urls:
-                seen_urls.add(full_url)
-                found_links.append({
-                    "url": full_url,
-                    "title": title,
-                    "platform": platform["name"]
-                })
-
-    for a in page.query_selector_all('a[href^="http"]'):
-        href = a.get_attribute("href") or ""
-        if not href or "google." in href:
+        if platform["domains"] and not any(d in lower_u for d in platform["domains"]):
             continue
-        if any(dom in href.lower() for dom in platform["domains"]) and href not in seen_urls:
-            lower_h = href.lower()
-            if not any(noise in lower_h for noise in ["/privacy", "/terms", "/about", "/press", "login", "signup", "/faq"]):
-                seen_urls.add(href)
-                t_el = a.query_selector('h3, span')
-                found_links.append({
-                    "url": href,
-                    "title": t_el.inner_text().strip() if t_el else "Job Listing",
-                    "platform": platform["name"]
-                })
+        if any(noise in lower_u for noise in ["/privacy", "/terms", "/about", "/press", "login", "signup", "/faq"]):
+            continue
+        seen_urls.add(url)
+        found_links.append({"url": url, "title": title or "Job Listing", "platform": platform["name"]})
 
     print(f"    [+] Harvested {len(found_links)} leads for {platform['name']}")
     return found_links
@@ -551,58 +531,50 @@ def is_valid_lead(lead: dict) -> bool:
 
 
 def run_master_job_army(search_query: str, headful: bool = False, limit: int = None):
-    all_harvested_links = []
+    per_platform = []
+    for plat in TARGET_PLATFORMS:
+        per_platform.append(harvest_links_for_platform(search_query, plat))
+        time.sleep(0.3)
 
+    mixed = [item for group in zip_longest(*per_platform) for item in group if item]
+
+    seen_h_urls = set()
+    all_harvested_links = []
+    for item in mixed:
+        if item["url"] not in seen_h_urls:
+            seen_h_urls.add(item["url"])
+            all_harvested_links.append(item)
+
+    if not all_harvested_links:
+        return []
+
+    if limit and len(all_harvested_links) > limit:
+        all_harvested_links = all_harvested_links[:limit]
+
+    leads = []
     with sync_playwright() as p:
+        launch_args = ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
         try:
-            browser = p.chromium.launch(
-                channel="chrome",
-                headless=not headful,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-            )
+            browser = p.chromium.launch(channel="chrome", headless=not headful, args=launch_args)
         except Exception:
-            browser = p.chromium.launch(
-                headless=not headful,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-            )
+            browser = p.chromium.launch(headless=not headful, args=launch_args)
 
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             viewport={"width": 1366, "height": 768},
             locale="en-US"
         )
+
         def _block_heavy(route):
             if route.request.resource_type in ("image", "media", "font", "stylesheet"):
                 route.abort()
             else:
                 route.continue_()
+
         context.route("**/*", _block_heavy)
         page = context.new_page()
 
-        for plat in TARGET_PLATFORMS:
-            links = harvest_google_links_for_platform(page, search_query, plat)
-            all_harvested_links.extend(links)
-            time.sleep(random.uniform(1.5, 3.0))
-
-        seen_h_urls = set()
-        deduped_links = []
         for item in all_harvested_links:
-            u = item["url"]
-            if u not in seen_h_urls:
-                seen_h_urls.add(u)
-                deduped_links.append(item)
-        all_harvested_links = deduped_links
-        total_links = len(all_harvested_links)
-
-        if total_links == 0:
-            browser.close()
-            return []
-
-        if limit and len(all_harvested_links) > limit:
-            all_harvested_links = all_harvested_links[:limit]
-
-        leads = []
-        for idx, item in enumerate(all_harvested_links):
             lead_data = scrape_job_page(
                 page=page,
                 url=item["url"],
@@ -611,14 +583,12 @@ def run_master_job_army(search_query: str, headful: bool = False, limit: int = N
                 fallback_title=item.get("title", "")
             )
             leads.append(lead_data)
-            time.sleep(random.uniform(1.2, 2.5))
+            time.sleep(random.uniform(1.0, 2.0))
 
         browser.close()
 
     valid_leads = [l for l in leads if is_valid_lead(l)]
     export_leads = valid_leads if valid_leads else leads
-
-    # Sort leads by SCORE descending
     export_leads = sorted(export_leads, key=lambda x: x.get("SCORE", 0), reverse=True)
 
     return export_leads
