@@ -571,6 +571,12 @@ def run_master_job_army(search_query: str, headful: bool = False, limit: int = N
             viewport={"width": 1366, "height": 768},
             locale="en-US"
         )
+        def _block_heavy(route):
+            if route.request.resource_type in ("image", "media", "font", "stylesheet"):
+                route.abort()
+            else:
+                route.continue_()
+        context.route("**/*", _block_heavy)
         page = context.new_page()
 
         for plat in TARGET_PLATFORMS:
