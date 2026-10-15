@@ -1,11 +1,15 @@
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 import uuid
+import threading
 from typing import Dict, Any, Optional
 
 from master_job_army import run_master_job_army
 
 app = FastAPI(title="Master Job Army API")
+
+# Ek saath sirf ek scrape chale (Chromium memory ke liye)
+scrape_lock = threading.Lock()
 
 # In-memory storage for job statuses
 jobs: Dict[str, Dict[str, Any]] = {}
@@ -17,7 +21,8 @@ class ScrapeRequest(BaseModel):
 
 def scrape_worker(job_id: str, query: str, headful: bool, limit: int):
     try:
-        leads = run_master_job_army(search_query=query, headful=headful, limit=limit)
+        with scrape_lock:
+            leads = run_master_job_army(search_query=query, headful=headful, limit=limit)
         jobs[job_id]["status"] = "done"
         jobs[job_id]["leads"] = leads
     except Exception as e:
@@ -38,5 +43,5 @@ def start_scraping(req: ScrapeRequest, background_tasks: BackgroundTasks):
 def get_job_status(job_id: str):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
     return jobs[job_id]
